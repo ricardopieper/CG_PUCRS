@@ -1,0 +1,1 @@
+g++ -O3 -std=c++17 -ISOIL -I. ExemploDeManipulacaoDeImagens.cpp -o ExemploDeManipulacaoDeImagens -lGL -lGLU -lglut
