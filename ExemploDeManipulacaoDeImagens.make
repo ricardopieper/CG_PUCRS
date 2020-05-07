@@ -19,12 +19,10 @@ endif
 # #############################################
 
 RESCOMP = windres
-INCLUDES += -ISOIL -I.
+INCLUDES += -ISOIL -ITemporizador -IImageClass
 FORCE_INCLUDE +=
 ALL_CPPFLAGS += $(CPPFLAGS) -MMD -MP $(DEFINES) $(INCLUDES)
 ALL_RESFLAGS += $(RESFLAGS) $(DEFINES) $(INCLUDES)
-LIBS += -lGL -lGLU -lglut
-LDDEPS +=
 LINKCMD = $(CXX) -o "$@" $(OBJECTS) $(RESOURCES) $(ALL_LDFLAGS) $(LIBS)
 define PREBUILDCMDS
 endef
@@ -36,19 +34,23 @@ endef
 ifeq ($(config),debug)
 TARGETDIR = bin/Debug
 TARGET = $(TARGETDIR)/ExemploDeManipulacaoDeImagens
-OBJDIR = obj/Debug
+OBJDIR = obj/Debug/ExemploDeManipulacaoDeImagens
 DEFINES += -DDEBUG
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -g -std=c++17 -Wall
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -g -std=c++17 -Wall
+LIBS += bin/Debug/libImageClass.a bin/Debug/libSOIL.a bin/Debug/libTemporizador.a -lGL -lGLU -lglut -lpthread
+LDDEPS += bin/Debug/libImageClass.a bin/Debug/libSOIL.a bin/Debug/libTemporizador.a
 ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64
 
 else ifeq ($(config),release)
 TARGETDIR = bin/Release
 TARGET = $(TARGETDIR)/ExemploDeManipulacaoDeImagens
-OBJDIR = obj/Release
-DEFINES += -DNDEBUG
+OBJDIR = obj/Release/ExemploDeManipulacaoDeImagens
+DEFINES +=
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O2 -std=c++17
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O2 -std=c++17
+LIBS += bin/Release/libImageClass.a bin/Release/libSOIL.a bin/Release/libTemporizador.a -lGL -lGLU -lglut -lpthread
+LDDEPS += bin/Release/libImageClass.a bin/Release/libSOIL.a bin/Release/libTemporizador.a
 ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
 
 else
@@ -65,12 +67,6 @@ endif
 OBJECTS :=
 
 OBJECTS += $(OBJDIR)/ExemploDeManipulacaoDeImagens.o
-OBJECTS += $(OBJDIR)/ImageClass.o
-OBJECTS += $(OBJDIR)/SOIL.o
-OBJECTS += $(OBJDIR)/Temporizador.o
-OBJECTS += $(OBJDIR)/image_DXT.o
-OBJECTS += $(OBJDIR)/image_helper.o
-OBJECTS += $(OBJDIR)/stb_image_aug.o
 
 # Rules
 # #############################################
@@ -133,24 +129,6 @@ endif
 # #############################################
 
 $(OBJDIR)/ExemploDeManipulacaoDeImagens.o: ExemploDeManipulacaoDeImagens.cpp
-	@echo $(notdir $<)
-	$(SILENT) $(CXX) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
-$(OBJDIR)/ImageClass.o: ImageClass.cpp
-	@echo $(notdir $<)
-	$(SILENT) $(CXX) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
-$(OBJDIR)/SOIL.o: SOIL/SOIL.cpp
-	@echo $(notdir $<)
-	$(SILENT) $(CXX) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
-$(OBJDIR)/image_DXT.o: SOIL/image_DXT.cpp
-	@echo $(notdir $<)
-	$(SILENT) $(CXX) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
-$(OBJDIR)/image_helper.o: SOIL/image_helper.cpp
-	@echo $(notdir $<)
-	$(SILENT) $(CXX) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
-$(OBJDIR)/stb_image_aug.o: SOIL/stb_image_aug.cpp
-	@echo $(notdir $<)
-	$(SILENT) $(CXX) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
-$(OBJDIR)/Temporizador.o: Temporizador.cpp
 	@echo $(notdir $<)
 	$(SILENT) $(CXX) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
 
