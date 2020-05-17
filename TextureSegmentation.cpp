@@ -1,14 +1,4 @@
-// **********************************************************************
-// PUCRS/FACIN
-// Programa de testes para manipulação de Imagens
-//
-// Marcio Sarroglia Pinho
-//
-// pinho@pucrs.br
-// **********************************************************************
-//
-//  Para rodar no XCODE, veja o arquivo "InstrucoesXCODE.rtf"
-//
+//#define DEBUG_VIEW
 
 #include <iostream>
 #include <cmath>
@@ -18,604 +8,454 @@
 #include <functional>
 #include <queue>
 #include <thread>
-#include <GL/glut.h>
-#include <GL/freeglut.h>
 #include <sys/stat.h>
-using namespace std;
-
-#ifdef __APPLE__
-#include <GLUT/glut.h>
-#else
-#include <GL/glut.h>
-#include <GL/freeglut.h>
-#endif
 
 #include "ImageClass.h"
-ImageClass Image, ImageFiltered, ImageSegmented, HistogramImage;
-
-#include "Temporizador.h"
-Temporizador T;
-
-#define LARGURA_JAN 1000
-#define ALTURA_JAN 500
-
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include "linq/core.hpp"
+#include "linq/query.hpp"
+#include "linq/aggregate.hpp"
+#include "linq/to_container.hpp"
+#include <string>
+#include <iostream>
+#include <dirent.h>
+#include <tuple>
 
-std::vector<float> histogramData;
-std::vector<float> histogramFiltered;
+using namespace std;
+using namespace linq;
 
-int window = 13;
-float minBrightness = -1;
-float contrastLevel = -1;
-std::vector<int> peaks;
-int peakWidth = 10;
+const int tons = 16;
+const int cropSize = 20;
 
-void ComputePeaks()
+struct MCOStatistics
 {
-    peaks.clear();
-    int currentCandidate = -1;
-    int currentCandidateVal = 0;
-    int startedGoingDownIdx = -1;
-    int startedGoingUpIdx = -1;
+#ifdef DEBUG_VIEW
+    ImageClass visualization;
+#endif
+    double energy;
+    double entropy;
+    double contrast;
+    double variance;
+    double homogeinity;
+};
 
-    auto minThreshold = *std::max_element(histogramFiltered.begin(), histogramFiltered.end()) * 0.1;
-
-    for (int x = 1 + peakWidth / 2; x < 255; x++)
+double Sum(int width, int height, std::function<double(int, int)> function)
+{
+    double result = 0;
+    for (int i = 0; i < width; i++)
     {
-
-        int prev = histogramFiltered[x - 1];
-        int cur = histogramFiltered[x];
-
-        if ((startedGoingDownIdx == -1 && cur > prev) || (cur > currentCandidateVal))
+        for (int j = 0; j < height; j++)
         {
-            //is going up
-            currentCandidate = x;
-            currentCandidateVal = cur;
-            startedGoingDownIdx = -1;
-            startedGoingUpIdx = x;
+            result += function(i, j);
+        }
+    }
+    return isnan(result)? 0 : result;
+}
+
+template <int tons>
+MCOStatistics MCO(ImageClass img, int cropStartX, int cropStartY, int dx, int dy)
+{
+
+    int n[tons][tons];
+#ifdef DEBUG_VIEW
+    ImageClass img2;
+    img2.SetSize(tons, tons, 3);
+#endif
+
+    //Zera a matriz
+    for (int i = 0; i < tons; i++)
+    {
+        for (int j = 0; j < tons; j++)
+        {
+            n[i][j] = 0;
+#ifdef DEBUG_VIEW
+            img2.SetPointIntensity(i, j, 0);
+#endif
+        }
+    }
+
+    //Calcula MCO
+    for (int i = cropStartX; i < cropStartX + cropSize; i++)
+    {
+        for (int j = cropStartY; j < cropStartY + cropSize; j++)
+        {
+
+            bool insideLimits = (i + dx) < img.SizeX() && (i + dx) >= 0 && (j + dy) < img.SizeY() && (j + dy) >= 0;
+
+            if (insideLimits)
+            {
+                auto px1 = img.GetPointIntensityRounded(i, j);
+                auto px2 = img.GetPointIntensityRounded(i + dx, j + dy);
+                n[(int)px1][(int)px2]++;
+            }
+        }
+    }
+
+    //Encontra o maior
+    int largest = 0;
+    for (int i = 0; i < tons; i++)
+    {
+        for (int j = 0; j < tons; j++)
+        {
+            if (largest < n[i][j])
+            {
+                largest = n[i][j];
+            }
+            //img.SetPointIntensity(i, j, n[i][j]);
+        }
+    }
+
+    //normaliza no intervalo 0 .. 1 e renderiza img
+    double normalized[tons][tons];
+    for (int i = 0; i < tons; i++)
+    {
+        for (int j = 0; j < tons; j++)
+        {
+            normalized[i][j] = ((double)n[i][j]) / (double)largest;
+        }
+    }
+#ifdef DEBUG_VIEW
+    for (int i = 0; i < tons; i++)
+    {
+        for (int j = 0; j < tons; j++)
+        {
+            img2.SetPointIntensity(i, j, normalized[i][j] * 255);
+        }
+    }
+#endif
+
+    double energy = Sum(tons, tons, [n](int x, int y) {
+        return n[x][y] * n[x][y];
+    });
+
+    double contrast = Sum(tons, tons, [n](int x, int y) {
+        return (double)n[x][y] * pow((double)x - y, 2.0f);
+    });
+
+    double entropy = -1.0f * Sum(tons, tons, [n](int x, int y) {
+        if (n[x][y] > 0)
+        {
+            return n[x][y] * log2(n[x][y]);
         }
         else
         {
-
-            if (currentCandidate == -1)
-            {
-                continue;
-            }
-
-            if (startedGoingDownIdx == -1)
-            {
-                startedGoingDownIdx = x;
-            }
-
-            if (x - startedGoingDownIdx > peakWidth && startedGoingUpIdx != -1)
-            {
-                if (currentCandidateVal > minThreshold)
-                {
-                    peaks.push_back(currentCandidate);
-                }
-                //x = currentCandidate + 1;
-                currentCandidate = -1;
-                currentCandidateVal = 0x7fffffff;
-                startedGoingDownIdx = -1;
-                startedGoingUpIdx = -1;
-            }
+            return (double)0;
         }
-    }
+    });
 
-    /*if (currentCandidate && startedGoingDownIdx) {
-        peaks.push_back(currentCandidate);
-    }*/
+    double variance = Sum(tons, tons, [n](int x, int y) {
+        return (double)n[x][y] * (double)abs(x - y);
+    });
+
+    double homogeinity = Sum(tons, tons, [n](int x, int y) {
+        double val = (double)n[x][y];
+        return val / (1.0 + pow(x - y, 2.0f));
+    });
+
+    return MCOStatistics{
+#ifdef DEBUG_VIEW
+        .visualization = img2,
+#endif
+        .energy = energy,
+        .entropy = entropy,
+        .contrast = contrast,
+        .variance = variance,
+        .homogeinity = homogeinity,
+    };
 }
 
-struct RGB
+struct MCCStatistics
 {
-    unsigned char R;
-    unsigned char G;
-    unsigned char B;
+#ifdef DEBUG_VIEW
+    ImageClass visualization;
+#endif
+    double runPercentage;
+    double shortRunEmphasis;
+    double longRunEmphasis;
+    double greyLevelNonUniformity;
+    double runLengthNonUniformity;
+    double lowGreyLevelRunEmphasis;
+    double highGreyLevelRunEmphasis;
+    double shortRunLowGreyLevelEmphasis;
+    double shortRunHighGreyLevelEmphasis;
+    double longRunLowGreyLevelEmphasis;
+    double longRunHighGreyLevelEmphasis;
 };
 
-void RenderString(int x, int y, void *font, const unsigned char *string, GLfloat r, GLfloat g, GLfloat b)
+template <int tons, int sizex, int sizey>
+MCCStatistics MCC(int img[cropSize][cropSize])
 {
-    glColor3f(r, g, b);
-    glRasterPos2i(x, y);
-    glutBitmapString(font, (const unsigned char *)string);
-}
 
-void DrawGraphNumbers(int step, int domainRange, int posX, int posY, int width, int height, RGB textColor)
-{
-    double pixelXToDomain = (double)width / domainRange;
+    constexpr int maxRunLength = tons;
 
-    //draw values
-    for (int i = step; i < domainRange; i += step)
+    int rlm[tons][maxRunLength];
+#ifdef DEBUG_VIEW
+    ImageClass img2;
+    img2.SetSize(tons, maxRunLength, 3);
+#endif
+    //zera a rlm (mcc)
+    for (int i = 0; i < tons; i++)
     {
-        auto xPos = posX + (pixelXToDomain * (i + 1));
-        const unsigned char *t = (const unsigned char *)(std::to_string(i).c_str());
-        RenderString(xPos, posY, GLUT_BITMAP_TIMES_ROMAN_10, t, textColor.R / 255.0f, textColor.G / 255.0, textColor.B / 255.0);
-    }
-}
-
-void ComputeHistogram()
-{
-    for (int i = 0; i < 255; i++)
-    {
-        histogramData[i] = 0;
-    }
-
-    for (int i = 0; i < ImageFiltered.SizeX(); i++)
-    {
-        for (int j = 0; j < ImageFiltered.SizeY(); j++)
+        for (int j = 0; j < maxRunLength; j++)
         {
-            int intensity = (int)ImageFiltered.GetPointIntensity(i, j);
-            if (intensity > 5)
-            {
-                histogramData[intensity]++;
-            }
-        }
-    }
-}
+            rlm[i][j] = 0;
 
-void SegmentImage()
-{
-
-    int neighboringRegion = window / 2;
-
-    for (int i = 0; i < ImageSegmented.SizeX(); i++)
-    {
-        for (int j = 0; j < ImageSegmented.SizeY(); j++)
-        {
-            ImageSegmented.DrawPixel(i, j, 0, 0, 0);
+#ifdef DEBUG_VIEW
+            img2.SetPointIntensity(i, j, 0);
+#endif
         }
     }
 
-    for (int i = 0; i < ImageFiltered.SizeX(); i++)
+    //calcula a rlm (direcao horizontal)
+    for (int i = 0; i < cropSize; i++)
     {
-        for (int j = 0; j < ImageFiltered.SizeY(); j++)
-        {
-            int intensity = (int)ImageFiltered.GetPointIntensity(i, j);
+        int currentRunLength = 1;
+        int lastGreyLevel = img[i][0];
 
-            /*25 -> 45:  255, 0, 0
-              45 -> 85:  0, 255, 0
-              85 -> 105: 0, 0, 255*/
-            if (intensity > 1 && intensity < 25)
+        for (int j = 1; j < cropSize; j++)
+        {
+            bool isSamePixel = lastGreyLevel == img[i][j];
+            bool isLast = j == cropSize - 1;
+
+            if (isSamePixel)
             {
-                ImageSegmented.DrawPixel(i + neighboringRegion, j + neighboringRegion, 255, 0, 0);
+                currentRunLength++;
             }
-            else if (intensity >= 45 && intensity <= 85)
+
+            if ((isLast || !isSamePixel) && currentRunLength > 0)
             {
-                ImageSegmented.DrawPixel(i + neighboringRegion, j + neighboringRegion, 0, 255, 0);
+                rlm[lastGreyLevel][currentRunLength]++;
             }
-            else if (intensity > 220)
+
+            if (!isSamePixel)
             {
-                ImageSegmented.DrawPixel(i + neighboringRegion, j + neighboringRegion, 0, 0, 255);
+                currentRunLength = 1;
             }
-            else
-            {
-                ImageSegmented.DrawPixel(i + neighboringRegion, j + neighboringRegion, 0, 0, 0);
-            }
+            lastGreyLevel = img[i][j];
         }
     }
-}
 
-void HistogramCalculateAndDraw(int posX, int posY, int width, int height)
-{
-
-    int totalWidth = glutGet(GLUT_WINDOW_WIDTH);
-    int totalHeight = glutGet(GLUT_WINDOW_HEIGHT);
-
-    HistogramImage.DrawLine(posX, posY, posX + width, posY, 255, 0, 0);
-    HistogramImage.DrawLine(posX, posY, posX, posY + height, 255, 0, 0);
-
-    float largestHistogramValue = *std::max_element(histogramFiltered.begin(), histogramFiltered.end());
-    if (largestHistogramValue == 0)
-        return;
-
-    double pixelYToHistogram = (double)height / (double)largestHistogramValue;
-    double pixelXToHistogram = (double)width / 255.0f;
-
-    //draw peaks
-    int peakHalf = peakWidth / 2;
-    for (auto c : peaks)
+    //Encontra o maior
+    int largest = 0;
+    for (int i = 0; i < tons; i++)
     {
-
-        if (c == -1)
-            continue;
-
-        int mid = posX + (pixelXToHistogram * (c + 1));
-        int xStart = mid - (peakHalf * pixelXToHistogram);
-        int xEnd = mid + (peakHalf * pixelXToHistogram);
-
-        HistogramImage.FillBox(xStart, posY, xEnd, height, 100, 255, 100);
+        for (int j = 0; j < maxRunLength; j++)
+        {
+            if (largest < rlm[i][j])
+            {
+                largest = rlm[i][j];
+            }
+            //img.SetPointIntensity(i, j, n[i][j]);
+        }
     }
 
-    //draw values
-    for (int i = 0; i < 255; i++)
+    //prepara uma visualização
+
+    double normalized[tons][maxRunLength];
+    for (int i = 0; i < tons; i++)
     {
-
-        auto xPos = (double)posX + (pixelXToHistogram * (i + 1));
-        auto histogramValue = histogramFiltered[i];
-        auto ySize = histogramValue * pixelYToHistogram;
-
-        HistogramImage.DrawLine(xPos, posY, xPos, posY + ySize, 0, 0, 0);
+        for (int j = 0; j < maxRunLength; j++)
+        {
+            normalized[i][j] = ((double)rlm[i][j]) / (double)largest;
+        }
     }
+
+#ifdef DEBUG_VIEW
+    for (int i = 0; i < tons; i++)
+    {
+        for (int j = 0; j < tons; j++)
+        {
+            img2.SetPointIntensity(i, j, normalized[i][j] * 255);
+        }
+    }
+#endif
+
+    auto rlmIter = range(0, tons) >> select_many([](int x) { return range(0, maxRunLength) >> select([x](int y) {
+                                                                        return std::make_tuple(x, y);
+                                                                    }); }, [](auto r, auto it) { return it; });
+
+    double numberOfRuns = Sum(tons, maxRunLength, [rlm](int x, int y) {
+        return rlm[x][y];
+    });
+
+    double nrInv = 1.0d / numberOfRuns;
+
+    double shortRunEmphasis = nrInv * Sum(tons, maxRunLength, [rlm](int i, int k) {
+                                  return (double)rlm[i][k] / pow((double)k + 1, 2);
+                              });
+
+    double longRunEmphasis = nrInv * Sum(tons, maxRunLength, [rlm](int i, int k) {
+                                 return (double)rlm[i][k] * pow((double)k + 1, 2);
+                             });
+
+    double greyLevelNonUniformity = nrInv * (range(0, tons) >> select([rlm](int i) {
+                                                 double s = range(0, maxRunLength) >> select([i, rlm](int j) {
+                                                                return (double)rlm[i][j];
+                                                            }) >>
+                                                            sum();
+                                                 s = pow(s, 2);
+                                                 return s;
+                                             }) >>
+                                             sum());
+
+    //a unica diferenca desse aqui pro de cima é que eles navegam em sentidos diferentes. linha x coluna vs coluna x linha
+    double runLengthNonUniformity = nrInv * (range(0, maxRunLength) >> select([rlm](int j) {
+                                                 double s = range(0, tons) >> select([j, rlm](int i) {
+                                                                return (double)rlm[i][j];
+                                                            }) >>
+                                                            sum();
+                                                 s = pow(s, 2);
+                                                 return s;
+                                             }) >>
+                                             sum());
+
+    double lowGreyLevelRunEmphasis = nrInv * Sum(tons, maxRunLength, [rlm](int i, int k) {
+                                         return (double)rlm[i][k] / pow((double)i + 1, 2);
+                                     });
+
+    double highGreyLevelRunEmphasis = nrInv * Sum(tons, maxRunLength, [rlm](int i, int k) {
+                                          return (double)rlm[i][k] * pow((double)i + 1, 2);
+                                      });
+
+    double shortRunLowGreyLevelEmphasis = nrInv * Sum(tons, maxRunLength, [rlm](int i, int k) {
+                                              return (double)rlm[i][k] / (pow((double)i + 1, 2) * pow((double)k + 1, 2));
+                                          });
+
+    double shortRunHighGreyLevelEmphasis = nrInv * Sum(tons, maxRunLength, [rlm](int i, int k) {
+                                               return ((double)rlm[i][k] * pow((double)i + 1, 2)) / (pow((double)k + 1, 2));
+                                           });
+
+    double longRunLowGreyLevelEmphasis = nrInv * Sum(tons, maxRunLength, [rlm](int i, int k) {
+                                             return (double)rlm[i][k] / (pow((double)k + 1, 2) * pow((double)i + 1, 2));
+                                         });
+
+    double longRunHighGreyLevelEmphasis = nrInv * Sum(tons, maxRunLength, [rlm](int i, int k) {
+                                              return (double)rlm[i][k] * pow((double)i + 1, 2) * (pow((double)k + 1, 2));
+                                          });
+
+    double numberOfPixels = cropSize * cropSize;
+
+    return MCCStatistics{
+#ifdef DEBUG_VIEW
+        .visualization = img2,
+#endif
+        .runPercentage = numberOfRuns / numberOfPixels,
+        .shortRunEmphasis = shortRunEmphasis,
+        .longRunEmphasis = longRunEmphasis,
+        .greyLevelNonUniformity = greyLevelNonUniformity,
+        .runLengthNonUniformity = runLengthNonUniformity,
+        .lowGreyLevelRunEmphasis = lowGreyLevelRunEmphasis,
+        .highGreyLevelRunEmphasis = highGreyLevelRunEmphasis,
+        .shortRunLowGreyLevelEmphasis = shortRunLowGreyLevelEmphasis,
+        .shortRunHighGreyLevelEmphasis = shortRunHighGreyLevelEmphasis,
+        .longRunLowGreyLevelEmphasis = longRunLowGreyLevelEmphasis,
+        .longRunHighGreyLevelEmphasis = longRunHighGreyLevelEmphasis};
 }
 
-struct Pixel
+enum Type
 {
-    int x;
-    int y;
-    float value;
+    Dentina,
+    Canal,
+    Pino,
+    Fundo
 };
 
-std::vector<Pixel> pixels;
-
-void ReloadImage(std::string path)
+struct Part
 {
-    Image.Load(path.c_str());
-}
-
-void ComputeHistogramMedian(int window)
-{
-    int neighboringRegion = window / 2;
-
-    for (int i = 0; i < 255; i++)
-    {
-        histogramFiltered[i] = 0;
-    }
-
-    for (int x = neighboringRegion; x < 255 - neighboringRegion; x++)
-    {
-        std::vector<int> values;
-        for (int i = 0; i < window; i++)
-        {
-            int val = histogramData[(x + i) - neighboringRegion];
-            if (val != 0)
-            {
-                values.push_back(val);
-            }
-        }
-        if (values.size() > 0)
-        {
-            std::sort(values.begin(), values.end());
-            int mid = values.size() / 2;
-            int median = values[mid];
-            histogramFiltered[x] = median;
-        }
-    }
-}
-
-void ComputeWholeImage(int window)
-{
-    histogramFiltered.clear();
-    HistogramImage.Clear();
-
-    for (int i = 0; i < 255; i++)
-    {
-        histogramFiltered.push_back(0);
-        histogramData.push_back(0);
-    }
-
-    ComputeHistogram();
-    ComputeHistogramMedian(window);
-}
-
-void ComputeImage(std::string path, std::string resultPath, std::string gabarito)
-{
-    ReloadImage(path);
-
-    ImageClass imgGabarito;
-    imgGabarito.Load(gabarito.c_str());
-
-    if (window % 2 == 0)
-    {
-        window++;
-    }
-
-    int neighboringRegion = window / 2;
-
-    ImageFiltered.SetSize(Image.SizeX() - neighboringRegion, Image.SizeY() - neighboringRegion, 3);
-
-    ImageSegmented.SetSize(Image.SizeX(), Image.SizeY(), 3);
-
-    int threads = 4;
-
-    int widthPerThread = Image.SizeX() / threads;
-    int heightPerThread = Image.SizeY() / threads;
-
-    std::vector<std::thread> processingThreads;
-
-    for (int threadNum = 0; threadNum < threads; threadNum++)
-    {
-
-        processingThreads.push_back(std::thread([threads, threadNum, neighboringRegion, widthPerThread, heightPerThread]() {
-            std::vector<double> intensities;
-            int regionStart = 0;
-            int regionEnd = 0;
-
-            if (threadNum == 0)
-            {
-                regionStart = neighboringRegion;
-            }
-
-            if (threadNum == (threads - 1))
-            {
-                regionEnd = neighboringRegion;
-            }
-
-            for (int x = regionStart + (widthPerThread * threadNum);
-                 x < -regionEnd + (widthPerThread * (threadNum + 1));
-                 x++)
-            {
-
-                for (int y = neighboringRegion;
-                     y < -neighboringRegion + Image.SizeY();
-                     y++)
-                {
-
-                    intensities.clear();
-                    for (int i = 0; i < window; i++)
-                    {
-                        for (int j = 0; j < window; j++)
-                        {
-
-                            int iWindow = i + x - neighboringRegion;
-                            int jWindow = j + y - neighboringRegion;
-
-                            intensities.push_back(Image.GetPointIntensity(iWindow, jWindow));
-                        }
-                    }
-                    std::sort(intensities.begin(), intensities.end());
-                    auto midpoint = intensities.size() / 2;
-                    ImageFiltered.SetPointIntensity(x - neighboringRegion, y - neighboringRegion, intensities[midpoint]);
-                }
-            }
-        }));
-    }
-
-    for (int threadNum = 0; threadNum < threads; threadNum++)
-    {
-        processingThreads[threadNum].join();
-    }
-
-    ComputeWholeImage(window);
-    ComputePeaks();
-    SegmentImage();
-    //HistogramImage.SetSize(glutGet(GLUT_WINDOW_WIDTH) / 2, glutGet(GLUT_WINDOW_HEIGHT), 3);
-    // auto dilated = dilate_1(ImageSegmented, RGB { 255, 0, 0 },  RGB { 0, 0, 0 });
-
-    // auto eroded = erode_1(dilated, RGB { 0, 255, 0 },  RGB { 255, 0, 0 });
-
-    ImageSegmented.Save(resultPath.c_str());
-
-    int truePositive = 0;
-    int falsePositive = 0;
-
-    for (int i = 0; i < ImageSegmented.SizeX(); i++)
-    {
-        for (int j = 0; j < ImageSegmented.SizeY(); j++)
-        {
-
-            unsigned char r, g, b;
-            unsigned char gr, gg, gb;
-
-            ImageSegmented.ReadPixel(i, j, r, g, b);
-            imgGabarito.ReadPixel(i, j, gr, gg, gb);
-
-            if (r == gr && g == gg && b == gb)
-            {
-                truePositive++;
-            }
-            else
-            {
-                falsePositive++;
-            }
-        }
-    }
-
-    std::cout << "True Positive: " << truePositive << std::endl;
-    std::cout << "False Positive: " << falsePositive << std::endl;
-    std::cout << "Accuracy: " << (float)truePositive / (float)(truePositive + falsePositive) << std::endl;
-}
-
-// **********************************************************************
-//  void reshape( int w, int h )
-//  trata o redimensionamento da janela OpenGL
-// **********************************************************************
-void reshape(int w, int h)
-{
-    // Reset the coordinate system before modifying
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    // Set the viewport to be the entire window
-    glViewport(0, 0, w, h);
-    gluOrtho2D(0, w, 0, h);
-
-    // Set the clipping volume
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-
-    HistogramImage.SetSize(glutGet(GLUT_WINDOW_WIDTH) / 2, glutGet(GLUT_WINDOW_HEIGHT), 3);
-}
-
-// **********************************************************************
-//  void display( void )
-// **********************************************************************
-void display(void)
-{
-    auto img = ImageSegmented;
-    static double AccumDeltaT = 0;
-
-    double dt = T.getDeltaT();
-    AccumDeltaT += dt;
-    if (AccumDeltaT > 1) // imprime o frame rate a cada 3 segundos
-    {
-        AccumDeltaT = 0;
-        cout << "FPS: " << 1.0 / dt << endl;
-    }
-
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Fundo de tela preto
-    glClear(GL_COLOR_BUFFER_BIT);
-    glMatrixMode(GL_MODELVIEW);
-
-    // Ajusta o ZOOM da imagem para que apareca na metade da janela
-
-    float zoomFactor = 1;
-
-    // posiciona a imagem nova na metada da direita da janela
-    // Ajusta o ZOOM da imagem para que apareca na metade da janela
-
-    float zoomH = (glutGet(GLUT_WINDOW_WIDTH) / (2 * zoomFactor)) / (double)Image.SizeX();
-    float zoomV = (glutGet(GLUT_WINDOW_HEIGHT) / zoomFactor) / (double)Image.SizeY();
-    img.SetZoomH(zoomH);
-    img.SetZoomV(zoomV);
-    // posiciona a imagem no canto inferior esquerdo da janela
-    img.SetPos(0, 0);
-
-    // Coloca as imagens na tela
-    img.Display();
-
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-
-    HistogramImage.SetPos(glutGet(GLUT_WINDOW_WIDTH) / 2, 0);
-    HistogramImage.Clear();
-
-    HistogramCalculateAndDraw(
-        20 + glutGet(GLUT_WINDOW_WIDTH) / 2,
-        20,
-        -40 + glutGet(GLUT_WINDOW_WIDTH) / 2,
-        -40 + (glutGet(GLUT_WINDOW_HEIGHT) / 1));
-
-    HistogramImage.Display();
-
-    DrawGraphNumbers(10, 255, 20 + glutGet(GLUT_WINDOW_WIDTH) / 2, 10, -40 + glutGet(GLUT_WINDOW_WIDTH) / 2, -20 + glutGet(GLUT_WINDOW_HEIGHT),
-                     RGB{0, 0, 0});
-
-    //DrawGraphNumbers(10, 255, 20 + glutGet(GLUT_WINDOW_WIDTH) / 2,  10 + (glutGet(GLUT_WINDOW_HEIGHT) / 2), -40 + glutGet(GLUT_WINDOW_WIDTH) / 2, -20 + glutGet(GLUT_WINDOW_HEIGHT),
-    //    RGB{0,0,0});
-
-    // Mostra a tela OpenGL
-    glutSwapBuffers();
-
-    //std::this_thread::sleep_for(std::chrono::milliseconds(240));
-}
-// **********************************************************************
-//  void keyboard ( unsigned char key, int x, int y )
-// **********************************************************************
-void keyboard(unsigned char key, int x, int y)
-{
-    switch (key)
-    {
-    case 27:     // Termina o programa qdo
-        exit(0); // a tecla ESC for pressionada
-        break;
-    default:
-        break;
-    }
-}
-
-// **********************************************************************
-//  void arrow_keys ( int a_keys, int x, int y )
-// **********************************************************************
-void arrow_keys(int a_keys, int x, int y)
-{
-    switch (a_keys)
-    {
-    case GLUT_KEY_UP: // When Up Arrow Is Pressed...
-        minBrightness += 50;
-        break;
-    case GLUT_KEY_DOWN: // When Down Arrow Is Pressed...
-        minBrightness -= 50;
-        break;
-    case GLUT_KEY_LEFT:
-        contrastLevel -= 30;
-        break;
-    case GLUT_KEY_RIGHT:
-        contrastLevel += 30;
-        break;
-    default:
-        break;
-    }
-    ComputeWholeImage(window);
-}
-
-// **********************************************************************
-// **********************************************************************
-void Mouse(int button, int state, int x, int y)
-{
-    if (state == GLUT_DOWN)
-    {
-        glutPostRedisplay();
-    }
-}
-
-struct Part {
     int quantity;
-    std::string name;
+    Type name;
 
     bool operator<(const Part &d) const
     {
-    	return d.quantity < quantity;
-    } 
-    
+        return d.quantity < quantity;
+    }
+
     bool operator>(const Part &d) const
     {
-    	return d.quantity > quantity;
-    }  
+        return d.quantity > quantity;
+    }
 };
 
-void CropImage(int num,
-               std::string image,
-               std::string truth,
-               std::string folder)
+struct Statistics
 {
-    std::string cropFolder = folder + "/" + std::to_string(num);
-    mkdir(cropFolder.c_str(), 0777);
+#ifdef DEBUG_VIEW
+    ImageClass croppedImage;
+#endif
+    Type type;
+    int posX;
+    int posY;
+    std::vector<MCOStatistics> mcoStats;
+    MCCStatistics mccStas;
+};
 
+std::vector<Statistics> CropImage(std::string image,
+                                  std::string truth)
+{
     ImageClass img;
     img.Load(image.c_str());
-    
+
     ImageClass gt;
     gt.Load(truth.c_str());
 
-    int size = 20;
+    int cropped[cropSize][cropSize];
 
-    for (int i = 0; i < img.SizeX(); i += size)
+    std::vector<Statistics> results;
+    int ignored = 0;
+
+    ImageClass reducedColors;
+    reducedColors.SetSize(img.SizeX(), img.SizeY(), 3);
+    double tons_mult = 255.0f / (double)tons;
+
+    for (int i = 0; i < img.SizeX(); i ++)
     {
-        for (int j = 0; j < img.SizeY(); j += size)
+        for (int j = 0; j < img.SizeY(); j ++)
+        {
+            auto intensity = img.GetPointIntensityRounded(i, j);
+            intensity = (int)(intensity / tons_mult);
+            reducedColors.SetPointIntensity(i, j, intensity);
+        }
+    }
+
+
+    for (int i = 0; i < img.SizeX(); i += cropSize)
+    {
+        for (int j = 0; j < img.SizeY(); j += cropSize)
         {
 
-            ImageClass cropped;
-            cropped.SetSize(size, size, 3);
+            Statistics statistics;
 
-            int tons = 32;
-            double tons_mult = 255.0f / (double)tons;
 
             int dentina = 0;
             int canal = 0;
             int fundo = 0;
             int pino = 0;
 
-            for (int x = 0; x < size; x++)
+            int nonBlackPixels = 0;
+
+            for (int x = 0; x < cropSize; x++)
             {
-                for (int y = 0; y < size; y++)
+                for (int y = 0; y < cropSize; y++)
                 {
                     int _x = i + x;
                     int _y = j + y;
-                    
-                    auto intensity = img.GetPointIntensity(_x, _y);
-                    intensity = (int)(intensity / tons_mult);
 
-                    cropped.SetPointIntensity(x, y, (int)(intensity * tons_mult));
-                  //  cropped.DrawPixel(x, y, r, g, b);
+                    auto intensity = reducedColors.GetPointIntensityRounded(_x, _y);
+
+                    if (intensity != 0)
+                    {
+                        nonBlackPixels++;
+                    }
+
+                    cropped[x][y] = intensity;
+                    //  cropped.DrawPixel(x, y, r, g, b);
 
                     int r = gt.ReadR(_x, _y);
                     int g = gt.ReadG(_x, _y);
                     int b = gt.ReadB(_x, _y);
-                    
-                    
+
                     if (r == 255)
                     {
                         canal++;
@@ -635,34 +475,299 @@ void CropImage(int num,
                 }
             }
 
-            if (dentina == 0 && canal == 0 && pino == 0)
+            if (nonBlackPixels == 0)
             {
                 //se for 100% fundo: ignora
+                ignored++;
                 continue;
             }
 
-            std::string result = cropFolder + "/crop_" + std::to_string(i) + "_" + std::to_string(j) + ".bmp";
-          
-            cropped.Save(result.c_str());
-          
-            std::cout << "Cropped " << num << " " << i << " " << j << std::endl;
-
-            std::string cropDescription = cropFolder + "/crop_" + std::to_string(i) + "_" + std::to_string(j) + ".txt";
+            //std::cout << "Cropped " << num << " " << i << " " << j << std::endl;
 
             std::priority_queue<Part, std::vector<Part>, std::greater<Part>> parts;
 
-            parts.push(Part { .quantity = dentina, .name = "dentina" });
-            parts.push(Part { .quantity = canal, .name = "canal" });
-            parts.push(Part { .quantity = pino, .name = "pino" });
-            parts.push(Part { .quantity = fundo, .name = "findo" });
+            parts.push(Part{.quantity = dentina, .name = Type::Dentina});
+            parts.push(Part{.quantity = canal, .name = Type::Canal});
+            parts.push(Part{.quantity = pino, .name = Type::Pino});
+            parts.push(Part{.quantity = fundo, .name = Type::Fundo});
 
             auto largest = parts.top();
-          
-            ofstream s;
-            s.open(cropDescription.c_str());
-            s << "TYPE=" << largest.name << std::endl;
-            s.close();
+            statistics.type = largest.name;
+            statistics.posX = i;
+            statistics.posY = j;
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 1, 0));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 0, 1));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 1, 1));
+
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 3, 0));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 0, 3));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 3, 3));
+
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 5, 0));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 0, 5));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 5, 5));
+
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 15, 0));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 0, 15));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 15, 15));
+
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 25, 0));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 0, 25));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 25, 25));
+
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 35, 0));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 0, 35));
+            statistics.mcoStats.push_back(MCO<tons>(reducedColors, i, j, 35, 35));
+
+            statistics.mccStas = MCC<tons, cropSize, cropSize>(cropped);
+#ifdef DEBUG_VIEW
+            statistics.croppedImage = cropped;
+#endif
+            results.push_back(statistics);
+
+#ifdef DEBUG_VIEW
+            std::string cropFolder = folder + "/" + std::to_string(num);
+            mkdir(cropFolder.c_str(), 0777);
+            std::string result = cropFolder + "/crop_" + std::to_string(i) + "_" + std::to_string(j) + ".bmp";
+            cropped.Save(result.c_str());
+            statistics.mcoStats[4].visualization.Save((cropFolder + "/crop_" + std::to_string(i) + "_" + std::to_string(j) + "_mco.bmp").c_str());
+            statistics.mccStas.visualization.Save((cropFolder + "/crop_" + std::to_string(i) + "_" + std::to_string(j) + "_mcc.bmp").c_str());
+#endif
         }
+    }
+    std::cout << "ignored: " << ignored << std::endl;
+    gt.Delete();
+    img.Delete();
+    return results;
+}
+
+void writeHeader(ofstream &ofstream)
+{
+    ofstream << "id,";
+
+    for (int i = 1; i <= 18; i++)
+    {
+        ofstream << "energy_" << i << ",";
+        ofstream << "entropy_" << i << ",";
+        ofstream << "contrast_" << i << ",";
+        ofstream << "variance_" << i << ",";
+        ofstream << "homogeinity_" << i << ",";
+    }
+
+    ofstream << "runPercentage,";
+    ofstream << "shortRunEmphasis,";
+    ofstream << "longRunEmphasis,";
+    ofstream << "greyLevelNonUniformity,";
+    ofstream << "runLengthNonUniformity,";
+    ofstream << "lowGreyLevelRunEmphasis,";
+    ofstream << "highGreyLevelRunEmphasis,";
+    ofstream << "shortRunLowGreyLevelEmphasis,";
+    ofstream << "shortRunHighGreyLevelEmphasis,";
+    ofstream << "longRunLowGreyLevelEmphasis,";
+    ofstream << "longRunHighGreyLevelEmphasis,class";
+    ofstream << std::endl;
+}
+
+void writeLine(std::string originalFile, ofstream &ofstream, Statistics &stats)
+{
+
+    //print id
+    ofstream << "crop" << originalFile << "_pos_x" << stats.posX << "_y" << stats.posY << ",";
+
+    for (auto mcoStatus : stats.mcoStats)
+    {
+        ofstream << mcoStatus.energy
+                 << "," << mcoStatus.entropy
+                 << "," << mcoStatus.contrast
+                 << "," << mcoStatus.variance
+                 << "," << mcoStatus.homogeinity
+                 << ",";
+    }
+
+    ofstream << stats.mccStas.runPercentage << ",";
+    ofstream << stats.mccStas.shortRunEmphasis << ",";
+    ofstream << stats.mccStas.longRunEmphasis << ",";
+    ofstream << stats.mccStas.greyLevelNonUniformity << ",";
+    ofstream << stats.mccStas.runLengthNonUniformity << ",";
+    ofstream << stats.mccStas.lowGreyLevelRunEmphasis << ",";
+    ofstream << stats.mccStas.highGreyLevelRunEmphasis << ",";
+    ofstream << stats.mccStas.shortRunLowGreyLevelEmphasis << ",";
+    ofstream << stats.mccStas.shortRunHighGreyLevelEmphasis << ",";
+    ofstream << stats.mccStas.longRunLowGreyLevelEmphasis << ",";
+    ofstream << stats.mccStas.longRunHighGreyLevelEmphasis << ",";
+
+    switch (stats.type)
+    {
+    case Type::Canal:
+        ofstream << "1";
+        break;
+    case Type::Dentina:
+        ofstream << "2";
+        break;
+    case Type::Pino:
+        ofstream << "3";
+        break;
+    case Type::Fundo:
+        ofstream << "4";
+        break;
+    default:
+        break;
+    }
+    ofstream << std::endl;
+};
+
+std::vector<std::string> listDir(std::string dirPath)
+{
+    std::vector<std::string> vec;
+    DIR *dir;
+    struct dirent *ent;
+    if ((dir = opendir(dirPath.c_str())) != NULL)
+    {
+        /* print all the files and directories within directory */
+        while ((ent = readdir(dir)) != NULL)
+        {
+            std::string fullpath = dirPath + "/" + ent->d_name;
+            vec.push_back(fullpath);
+        }
+        closedir(dir);
+    }
+    return vec;
+}
+
+bool fileExists(const std::string &name)
+{
+    if (FILE *file = fopen(name.c_str(), "r"))
+    {
+        fclose(file);
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+std::vector<std::string> split(std::string s, std::string delimiter)
+{
+    size_t pos_start = 0, pos_end, delim_len = delimiter.length();
+    std::string token;
+    std::vector<std::string> res;
+
+    while ((pos_end = s.find(delimiter, pos_start)) != std::string::npos)
+    {
+        token = s.substr(pos_start, pos_end - pos_start);
+        pos_start = pos_end + delim_len;
+        res.push_back(token);
+    }
+
+    res.push_back(s.substr(pos_start));
+    return res;
+}
+
+void tryRenderResult()
+{
+
+    ifstream file;
+    file.open("previsoes.csv");
+
+    std::string str;
+    bool header = true;
+
+    std::map<std::string, std::vector<std::tuple<int, int, Type>>> fileAndResults;
+
+    while (std::getline(file, str))
+    {
+        if (header)
+        {
+            header = false;
+            continue;
+        }
+
+        auto cols = split(str, ",");
+
+        auto x = split(cols[0], "_pos_");
+        //crop./images/ImagensOriginais/Dentes 01 02 03_rec0647.png_pos_x1440_y940,4
+
+        auto file = x[0].substr(4, x[0].size() - 4); //tira o crop
+        auto posxy = split(x[1], "_");
+
+        auto posx = std::atoi(posxy[0].substr(1, posxy[0].size() - 1).c_str());
+        auto posy = std::atoi(posxy[1].substr(1, posxy[1].size() - 1).c_str());
+
+        Type type;
+
+        switch (std::atoi(cols[1].c_str()))
+        {
+        case 1:
+            type = Type::Canal;
+            break;
+        case 2:
+            type = Type::Dentina;
+            break;
+        case 3:
+            type = Type::Pino;
+            break;
+        case 4:
+            type = Type::Fundo;
+            break;
+        default:
+            break;
+        }
+        if (fileAndResults.find(file) == fileAndResults.end())
+        {
+            fileAndResults[file] = std::vector<std::tuple<int, int, Type>>();
+        }
+        fileAndResults[file].push_back(std::make_tuple(posx, posy, type));
+        //std::cout << file << ", " << posx << ", " << posy << ", " << type << std::endl;
+    }
+
+    for (auto const &element : fileAndResults)
+    {
+        auto filename = element.first;
+
+        ImageClass img;
+        img.Load(filename.c_str());
+
+        ImageClass img2;
+        img2.SetSize(img.SizeX(), img.SizeY(), 3);
+
+    //converte img para 3 canais
+        for (int i = 0; i < img.SizeX(); i++)
+        {
+            for (int j = 0; j < img.SizeY(); j++)
+            {
+                img2.SetPointIntensity(i, j, img.GetPointIntensityRounded(i, j));
+            }
+        }
+
+        for (auto record : element.second)
+        {
+            auto x = std::get<0>(record);
+            auto y = std::get<1>(record);
+            Type t = std::get<2>(record);
+
+            for (int i = x; i < x + cropSize; i++)
+            {
+                for (int j = y; j < y + cropSize; j++)
+                {
+
+                    if (t == Type::Dentina)
+                    {
+                        img2.DrawPixel(i, j, 0, 255, 0);
+                    }
+                    else if (t == Type::Canal)
+                    {
+                        img2.DrawPixel(i, j, 255, 0, 0);
+                    }
+                }
+            }
+        }
+
+        auto filenameDrawn = filename + "_result.bmp";
+
+        img2.Save(filenameDrawn.c_str());
+        img.Delete();
+        img2.Delete();
     }
 }
 
@@ -671,26 +776,80 @@ void CropImage(int num,
 // **********************************************************************
 int main(int argc, char **argv)
 {
-    /* glutInit(&argc, argv);
+    //descomentar essas 2 linhas para gerar visualizaçao após treino do classificador.py
+    //tryRenderResult();
+    //return 0;
 
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_DEPTH | GLUT_RGB);
-    glutInitWindowPosition(10, 10);
+    ofstream train;
+    train.open("treino.csv");
+    writeHeader(train);
 
-    // Define o tamanho da janela gráfica do programa
-    glutInitWindowSize(LARGURA_JAN, ALTURA_JAN);
-    glutCreateWindow("Image Loader"); */
+    ofstream test;
+    test.open("teste.csv");
+    writeHeader(test);
 
-    for (int i = 727; i <= 731; i++)
+    int dentina = 0;
+    int canal = 0;
+    int fundo = 0;
+    int pino = 0;
+
+    auto groundTruthFiles = listDir("./images/GroundTruth");
+
+    for (auto groundTruth : groundTruthFiles)
     {
-        CropImage(i, "/home/ricardo/Downloads/Dados9/" + std::to_string(i) + ".bmp",
-                  "/home/ricardo/Downloads/Dados9/Editados/bmp/A2 Dentes 01 02 03__rec0" + std::to_string(i) + ".bmp",
-                  "/home/ricardo/Downloads/Dados9/crops");
+        //pega o nome do arquivo:
 
-        //ComputeImage(
-        //    "/home/ricardo/Downloads/Dados9/"+std::to_string(i)+".bmp",
-        //   "/home/ricardo/Downloads/Dados9/Resultados/"+std::to_string(i)+".bmp",
-        //   "/home/ricardo/Downloads/Dados9/Editados/bmp/"+std::to_string(i)+".bmp");
+        std::string filenameOnly = basename(groundTruth.c_str()); // = file.find_last_of(".");
+        if (filenameOnly == ".." || filenameOnly == ".")
+        {
+            continue;
+        }
+        std::string noExtension = filenameOnly.substr(0, filenameOnly.find_last_of("."));
+
+        //tenta abrir bmp, depois png
+        std::string pngOriginal = "./images/ImagensOriginais/" + noExtension + ".png";
+
+        if (fileExists(pngOriginal))
+        {
+            std::cout << "File " << pngOriginal << " exists!" << std::endl;
+        }
+        else
+        {
+            std::cout << "File " << pngOriginal << " DOES NOT exists!" << std::endl;
+            continue;
+        }
+
+        auto cropsAndStats = CropImage(pngOriginal, groundTruth);
+
+        std::cout << "Computed " << groundTruth << " crops: " << cropsAndStats.size() << std::endl;
+        for (auto stats : cropsAndStats)
+        {
+            if (stats.type == Type::Canal)
+            {
+                canal++;
+            }
+            if (stats.type == Type::Dentina)
+            {
+                dentina++;
+            }
+            if (stats.type == Type::Fundo)
+            {
+                fundo++;
+            }
+            if (stats.type == Type::Pino)
+            {
+                pino++;
+            }
+
+            ofstream &stream = drand48() > 0.8 ? test : train;
+            writeLine(pngOriginal, stream, stats);
+        }
     }
+
+    std::cout << "Dentina = " << dentina << std::endl;
+    std::cout << "Canal = " << canal << std::endl;
+    std::cout << "Pino = " << pino << std::endl;
+    std::cout << "Fundo = " << fundo << std::endl;
 
     /*
     glutDisplayFunc(display);
